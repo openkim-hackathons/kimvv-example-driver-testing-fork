@@ -13,7 +13,9 @@ import tomlkit
 OPENKIM_TEST_DRIVERS = ["EquilibriumCrystalStructure__TD_457028483760_003"]
 
 # List of URLs of development Test Drivers to test
-DEVEL_TEST_DRIVERS = []
+DEVEL_TEST_DRIVERS = [
+    "https://github.com/openkim-hackathons/CrystalGenomeASEExample__TD_000000654321_000/archive/refs/tags/v000b0.tar.gz"
+]
 
 
 def create_init(td_root_path: os.PathLike):
