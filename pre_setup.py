@@ -4,14 +4,21 @@ import shutil
 import tarfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.request import urlopen, urlretrieve
+from urllib.error import HTTPError
+from urllib.request import urlcleanup, urlretrieve
 
 import kim_edn
 import tomlkit
 
-# Dictionary of production Test Drivers and kwargs to pass to them)
+# Dictionary of production Test Drivers and kwargs to pass to them during testing
 OPENKIM_TEST_DRIVERS = {
-    "EquilibriumCrystalStructure__TD_457028483760_003": {"steps": 10}
+    "EquilibriumCrystalStructure__TD_457028483760_003": {"steps": 10},
+    "ElasticConstantsCrystal__TD_034002468289_001": {"method": "stress-condensed"},
+    "CrystalStructureAndEnergyVsPressure__TD_685283176869_000": {
+        "pressure_step_gpa": 5,
+        "exp_step": 1.5,
+        "min_steps": 10,
+    },
 }
 
 # List of URLs of development Test Drivers to test
@@ -20,6 +27,8 @@ DEVEL_TEST_DRIVERS = {
         "num_steps": 2
     }
 }
+
+MAX_URLLIB_ATTEMPTS = 10
 
 
 def create_init(td_root_path: os.PathLike):
@@ -43,6 +52,18 @@ def move_driver(prefix: str, source_dir: os.PathLike):
     create_init(final_path_to_driver)
 
 
+def urlretrieve_with_retries(url) -> str:
+    for _ in range(MAX_URLLIB_ATTEMPTS):
+        try:
+            tmpfile, _ = urlretrieve(url)
+            return tmpfile
+        except HTTPError:
+            pass
+    raise RuntimeError(
+        f"Failed to download {url}" f" after {MAX_URLLIB_ATTEMPTS} attempts."
+    )
+
+
 if __name__ == "__main__":
     kimvv_test_drivers = {}
 
@@ -54,7 +75,7 @@ if __name__ == "__main__":
         prefix = "_".join(test_driver.split("_")[:-4])
         # Store the dict of kwargs in the "kimvv_test_drivers" dictionary
         kimvv_test_drivers[prefix] = OPENKIM_TEST_DRIVERS[test_driver]
-        tmpfile, _ = urlretrieve(url)
+        tmpfile = urlretrieve_with_retries(url)
         # Extract it and move it to kimvv directory
         with tarfile.open(tmpfile, "r:xz") as f:
             f.extractall()
@@ -62,7 +83,7 @@ if __name__ == "__main__":
 
     # Download and untar development TDs
     for test_driver in DEVEL_TEST_DRIVERS:
-        tmpfile, _ = urlretrieve(test_driver)
+        tmpfile = urlretrieve_with_retries(test_driver)
         # Extract it to a temporary directory
         with TemporaryDirectory() as tmpdir:
             with tarfile.open(tmpfile, "r:gz") as f:
@@ -126,19 +147,24 @@ if __name__ == "__main__":
         else:
             # Look up developer on openkim.org
             for developer in kimspec["developer"]:
-                with urlopen(f"https://openkim.org/profile/{developer}.json") as u:
-                    developer_profile = json.load(u)
-                    name = (
-                        developer_profile["first-name"]
-                        + " "
-                        + developer_profile["last-name"]
-                    )
-                    if any(
-                        name.lower() in author["name"].lower()
-                        for author in pyproject["project"]["authors"]
-                    ):
-                        continue
-                    pyproject["project"]["authors"].append({"name": name})
+                tmpfile = urlretrieve_with_retries(
+                    f"https://openkim.org/profile/{developer}.json"
+                )
+                with open(tmpfile) as f:
+                    developer_profile = json.load(f)
+                name = (
+                    developer_profile["first-name"]
+                    + " "
+                    + developer_profile["last-name"]
+                )
+                if any(
+                    name.lower() in author["name"].lower()
+                    for author in pyproject["project"]["authors"]
+                ):
+                    continue
+                pyproject["project"]["authors"].append({"name": name})
+
+        urlcleanup()
 
         manifest_path = os.path.join(driver_path, "MANIFEST.in")
         if os.path.isfile(manifest_path):
@@ -153,13 +179,16 @@ if __name__ == "__main__":
 
     # write __init__.py
     with open("kimvv/__init__.py", "w") as f:
-        f.write("from .core import KIMVVTestDriver\n")
+        # import call decorator
+        f.write("from .core import KIMVVTestDriver, override_call_method\n")
         for td in kimvv_test_drivers:
             f.write(f"from .{td}.test_driver.test_driver import TestDriver as __{td}\n")
 
         f.write("\n\n")
 
         for td in kimvv_test_drivers:
+            # add call decorator
+            f.write("@override_call_method\n")
             f.write(f"class {td}(__{td}, KIMVVTestDriver):\n    pass\n\n\n")
 
         f.write("__all__ = [\n")
